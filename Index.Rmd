@@ -1,30 +1,227 @@
 ---
-title: "Practical Machine Learning Course Project"
+title: "PML_Project"
 author: "CJaxx"
-date: "21 July 2016"
-output: html_document
+date: "18 July 2016"
+output: 
+  html_document: 
+    keep_md: yes
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+
 ```
 
-## R Markdown
+## Introduction
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This project is based on a dataset collected by Velloso et al (Velloso et al, 2013) as part of a study to evaluate whether data collected from on-body sensors could be used to assess the quality of the exercise being measured, to assess whether the exercise was conducted correctly or not.  In this project we are using their data to attempt to build a model which can predict whether the activity was done correctly of not.    
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+The data comes from sensors placed on the bicep, wrist and belt of the participants and on the dumbbell. There were six male participants (aged 20-28) and they were each asked to perform one set of 10 repetitions of a Unilateral Dumbbell Bicep Curl.  Each participant did one set correctly, then one set in four incorrect methods (corresponding to the most common mistakes for this type of exercise). The dumbbell used was 1.25kg, light enough to allow the participants to do the incorrect methods without the risk of injuring themselves (Velloso et al, 2013).
 
-```{r cars}
-summary(cars)
+* Class A = The correct method - 
+* Class B = incorrect method - throwing the elbows to the front
+* Class C = incorrect method - lifting the dumbbell only half way
+* Class D = Incorrect method - lowering the dumbbell only half way
+* Class E = incorrect method - throwing the hips forward
+
+https://en.wikipedia.org/wiki/Euler_angles#/media/File:Eulerangles.svg
+
+Following the Components of a predictor from lecture 2, we have:
+
+Question > input data > features > algorithm > parameters > evaluation
+
+## Question 
+First we need to define/clarify the question we are trying to answer.
+
+Can we use on-body sensor data to accurately predict whether a participant did the Dumbbell bicep curl correctly made one of four common mistakes?
+## Input data
+
+
+### Load data
+```{r}
+pmlTraining <- read.csv("pml-training.csv", header=TRUE )
+pmlValidation <- read.csv("pml-testing.csv", header=TRUE)
+dim(pmlTraining)
+dim(pmlValidation)
+```
+### Initial data analysis
+```{r eval=FALSE}
+str(pmlTraining)
+dim(pmlTraining)
+```
+Looking at the training data we can see that there are 19,622 observations with 160 variables recorded. There are a lot of blank fields and NAs that need to be dealt with. 
+
+### Data cleaning
+The datasets have a number of issues: 
+
+1. There are a lot of fields with zero or near zero values
+2. There are a lot of NAs
+3. There are unnecessary fields relating the participant and the sensor that we don't need
+
+```{r}
+library(caret)
+
+## Clean the data
+pmlTraining <- pmlTraining[, colSums(is.na(pmlTraining))==0]
+## Identify and remove near zero values with caret
+nzv <- nearZeroVar(pmlTraining)
+pmlTraining <- pmlTraining[ , -nzv]
+## Remove the first 5 columns which identify the participant and the timestamp
+pmlTraining <- pmlTraining[, -(1:5)]
+
+## Clean the Validation test set
+pmlValidation <- pmlValidation[, colSums(is.na(pmlValidation))==0]
+
+dim(pmlTraining)
+dim(pmlValidation)
 ```
 
-## Including Plots
 
-You can also embed plots, for example:
+## Feature selection
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+We need to use cross validation to pick the variables to include in the model, the type of prediction function to use and to pick the parameters in the predict function and to compare different predictors (lecture 8). The cross-validation approach was outlined as:
+
+1. Use the training set
+2. Split it into training/test sets
+3. Build a model on the training set
+4. Evaluate it on the test set
+5. Repeat and average the estimate errors
+6. Additional step here to test on the validation set for Coursera Submission
+
+
+1-2. Split the training data so we can test model without using the final Validation dataset we need to submit (and to avoid overfitting). I'm using a 60/40 split as advised for medium size sample (then the 20 for the test data given = the validation set which is optional except in test situations).  
+
+```{r}
+set.seed(25)
+library(caret)
+inTrain <- createDataPartition(y=pmlTraining$classe, p=0.6, list=F)
+Training <- pmlTraining[inTrain,] # use for training our model
+Testing <- pmlTraining[-inTrain,] # use for testing our model
+dim(Training)
+dim(Testing)
+```
+So now we have three datasets Training with 11,776 records, Testing with 7846 recrods, and the final validation (to be used only for the final test and submission (pmlValidation)). The Training and Testing datasets have 54 variables.
+
+This leaves the pmlValidation dataset.
+
+3. Build a model
+
+### Model 1 - We'll start with a classification tree.
+As this is a learning activity, I'm going to build 2 models, the first bootstrapped, the second cross-validated.
+```{r}
+library(rattle)
+set.seed(123)
+# Our first model (bootstrapped)
+fitRpartBS <- train(classe ~., data=Training, method="rpart")
+fancyRpartPlot(fitRpartBS$finalModel, palettes=c("Greens", "Greys"))
+fitRpartBS
+# Second model - same thing but using cross validation
+crossVal <- trainControl(method="cv", number=5)
+fitRpartCV <- train(classe ~., data=Training, method="rpart", trControl=crossVal)
+fancyRpartPlot(fitRpartCV$finalModel, palettes="YlGn")
+fitRpartCV
+
+## Use our models to make predictions
+predictBS <- predict(fitRpartBS, Testing)
+ConfMatrBS <- confusionMatrix(Testing$class, predictBS)
+ConfMatrBS 
+
+predictCV <- predict(fitRpartCV, Testing)
+ConfMatrCV <- confusionMatrix(Testing$class, predictCV)
+ConfMatrCV 
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Out of sample Error:
+```{r}
+## Work out the Out of Sample Error
+OutSampleErrorBS <- 1-unname(ConfMatrBS$overall[1])
+OutSampleErrorBS
+
+OutSampleErrorCV <- 1-unname(ConfMatrCV$overall[1])
+OutSampleErrorCV
+```
+The accuracy for both models is 0.5015 (which is about as accurate as a coinflip) and the out of sample error is 0.4984706.  
+
+So we need to try a different approach.
+
+
+### Model 2 - Random Forest
+
+Warning: The dataset isn't small, so the random forest model will take a few minutes to run (with any method). I'm using the randomForest packages rather than method="rf" in the caret package as it seems to be significantly faster.  I initially tried the random forest method using the train() function from the caret package with the trainControl() adding cross-validation and limiting the number of iterations 
+
+Reading Xing Su's Practical Machine Learning Course Notes (See reference 3, page 46), he suggested that the randomForest() function/package is much faster so I tried it and got similar results in less time.
+
+```{r}
+# Uncomment the next line to install the randomForest package
+#install.packages("randomForest")
+library(randomForest)
+# Model 2.1 - random forest model built with caret and 5-fold cross-validation 
+
+crossVal <- trainControl(method="cv", number=5)
+fitRF2.1 <- train(classe ~., data = Training, method="rf", prox=TRUE, trControl=crossVal)
+fitRF2.1
+
+
+# Model 2.2 - random forest model built with randomForest() package
+fitRF2.2 <- randomForest(classe ~., data = Training, prox=TRUE, ntree=800)
+fitRF2.2
+
+
+```
+
+We'll test our models on the Testing dataset:
+```{r}
+predict2.1 <- predict(fitRF2.1, Testing)
+ConfMatr2.1 <- confusionMatrix(Testing$class, predict2.1)
+ConfMatr2.1
+
+predict2.2 <- predict(fitRF2.2, Testing)
+ConfMatr2.2 <- confusionMatrix(Testing$class, predict2.2)
+ConfMatr2.2
+
+```
+
+Accuracy of Random Forest model
+```{r}
+OutSampleError2.1 <- 1-unname(ConfMatr2.1$overall[1])
+OutSampleError2.1
+
+OutSampleError2.2 <- 1-unname(ConfMatr2.2$overall[1])
+OutSampleError2.2
+```
+So the models show:
+
+Model 2.1
+- accuracy 0.9973
+- out of sample error 0.00268
+
+Model 2.2
+- accuracy 0.9966 
+- out of sample error 0.00344
+
+
+
+## Use the best model to make predictions on the final Validation data
+
+So the caret random forest method has a slightly higher accuracy and smaller out of sample error so we will use this for our final prediction. Perhaps the randomForest() function would have higher accuracy if given a larger `ntree` value.
+
+```{r}
+predictFinal <- predict(fitRF2.1, pmlValidation)
+
+FinalPrediction <- data.frame(pmlValidation$problem_id, predictFinal)
+FinalPrediction
+```
+
+## Conclusion
+Within the framework of this assignment, it appears that the random forest model is the best predictor. The reference that goes with the data (Velloso, 2013) uses a 'sliding window' approach to feature extraction, which looks like an interesting technique - I've found another reference which might be interesting to look at: https://fedcsis.org/proceedings/2015/pliks/425.pdf 
+
+We can now use our predictions `FinalPrediction` in the Coursera submission quiz.
+
+## References
+
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.;  Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013. Read more: http://groupware.les.inf.puc-rio.br/har#ixzz4EsDiTsfG
+
+
+2. Caret package ref: http://topepo.github.io/caret/preprocess.html
+
+3. Xing Su - Practical Machine Learning Course Notes. http://sux13.github.io/DataScienceSpCourseNotes/
